@@ -1,0 +1,5 @@
+{
+  "name": "DataLens AI",
+  "description": "An intelligent data analysis platform that cleans, visualizes, and predicts trends from your Excel datasets using Gemini AI.",
+  "requestFramePermissions": []
+}

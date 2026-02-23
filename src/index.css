@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Force hex colors to avoid oklch parsing issues in html2canvas */
+  --color-zinc-50: #fafafa;
+  --color-zinc-100: #f4f4f5;
+  --color-zinc-200: #e4e4e7;
+  --color-zinc-400: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #52525b;
+  --color-zinc-700: #3f3f46;
+  --color-zinc-800: #27272a;
+  --color-zinc-900: #18181b;
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+  --color-emerald-700: #047857;
+  --color-amber-50: #fffbeb;
+  --color-amber-200: #fde68a;
+  --color-amber-700: #b45309;
+  --color-blue-600: #2563eb;
+}
+
+@layer base {
+  body {
+    @apply font-sans text-zinc-900 antialiased;
+  }
+}
+
+.prose h1, .prose h2, .prose h3 {
+  @apply tracking-tight font-bold text-zinc-900;
+}
+
+.prose p {
+  @apply text-zinc-600 leading-relaxed;
+}
+
+.prose code {
+  @apply font-mono bg-zinc-100 px-1 rounded text-emerald-600;
+}
