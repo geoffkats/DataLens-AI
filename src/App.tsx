@@ -1,9 +1,4 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Database, 
   RefreshCw, 
@@ -18,516 +13,575 @@ import {
   UserCircle,
   Calendar,
   FileText,
-  Settings
+  Settings,
+  Flag,
+  Calculator,
+  Plus,
+  History,
+  TrendingUp,
+  ShieldCheck,
+  AlertTriangle,
+  PanelLeft,
+  Sparkles,
+  PieChart as PieChartIcon,
+  FileDown
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { format, subMonths, isWithinInterval, startOfMonth, endOfMonth } from 'date-fns';
+import { motion, AnimatePresence } from 'framer-motion';
+import * as XLSX from 'xlsx';
 import { FileUpload } from './components/FileUpload';
+import { DataHealth } from './components/DataHealth';
 import { DataTable } from './components/DataTable';
-import { Visualizations } from './components/Visualizations';
-import { AIAssistant } from './components/AIAssistant';
-import { ReportGenerator } from './components/ReportGenerator';
+import { ColumnSelector } from './components/ColumnSelector';
 import { TemplateManager } from './components/TemplateManager';
-import { analyzeData, suggestCleaning } from './services/geminiService';
-import { cn } from './lib/utils';
-
-type Tab = 'dashboard' | 'data' | 'visuals' | 'ai' | 'report' | 'settings';
-type Role = 'General' | 'Accountant' | 'Manager' | 'Analyst';
-type TimeRange = 'all' | 'this_month' | 'last_month' | 'last_3_months' | 'last_year';
+import { Visualizations } from './components/Visualizations';
+import { ReportGenerator } from './components/ReportGenerator';
+import { AIAssistant } from './components/AIAssistant';
+import { AIChat } from './components/AIChat';
+import { 
+  getSemanticSchemaMapping, 
+  analyzeDataSwamp, 
+  normalizeData, 
+  applyCleaningStep,
+  suggestCleaning,
+  runOrchestrationPipeline,
+  processChatCommand
+} from './services/geminiService';
+import { formatPhoneNumber, standardizeGrade, cn } from './lib/utils';
+import { ColumnConfig, AuditLog, ChatAction, Tab, Role } from './types';
 
 export default function App() {
   const [data, setData] = useState<any[]>([]);
-  const [originalData, setOriginalData] = useState<any[]>([]);
-  const [fileName, setFileName] = useState<string>('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isNormalizing, setIsNormalizing] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [role, setRole] = useState<Role>('General');
-  const [timeRange, setTimeRange] = useState<TimeRange>('all');
-  const [chartFilter, setChartFilter] = useState<{ column: string; value: any } | null>(null);
-  
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiReport, setAiReport] = useState<string | null>(null);
-  const [cleaningSuggestions, setCleaningSuggestions] = useState<any[]>([]);
-  const [isCleaning, setIsCleaning] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
+  const [schemaInsights, setSchemaInsights] = useState<string | null>(null);
+  const [recoveryMetrics, setRecoveryMetrics] = useState<any[]>([]);
+  const [columnConfigs, setColumnConfigs] = useState<ColumnConfig[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [stats, setStats] = useState({
+    totalRecords: 0,
+    duplicatesRemoved: 0,
+    formattingFixed: 0,
+    schemaMapped: 0
+  });
 
-  // Automated Data Preparation
-  const prepareData = (rawData: any[]) => {
-    return rawData.map(row => {
-      const cleanRow = { ...row };
-      Object.keys(cleanRow).forEach(key => {
-        // Trim strings
-        if (typeof cleanRow[key] === 'string') {
-          cleanRow[key] = cleanRow[key].trim();
-          
-          // Attempt date conversion if column name suggests date
-          if (key.toLowerCase().includes('date') || key.toLowerCase().includes('time')) {
-            const date = new Date(cleanRow[key]);
-            if (!isNaN(date.getTime())) {
-              cleanRow[key] = date;
-            }
-          }
-        }
-        // Handle numeric formatting
-        if (!isNaN(Number(cleanRow[key])) && cleanRow[key] !== '' && typeof cleanRow[key] !== 'boolean') {
-          cleanRow[key] = Number(cleanRow[key]);
-        }
-      });
-      return cleanRow;
-    });
+  const logAction = (action: string, details: string) => {
+    setAuditLogs(prev => [{
+      timestamp: new Date(),
+      action,
+      details,
+      user: role
+    }, ...prev]);
   };
 
-  const handleDataLoaded = (loadedData: any[], name: string) => {
-    const prepared = prepareData(loadedData);
-    setData(prepared);
-    setOriginalData(prepared);
-    setFileName(name);
-    setActiveTab('dashboard');
-    setAiReport(null);
-    setCleaningSuggestions([]);
-  };
-
-  const filteredData = useMemo(() => {
-    let result = data;
+  const processFiles = async (newJson: any[], fileName: string) => {
+    setIsProcessing(true);
+    logAction('File Uploaded', `Started processing ${fileName}`);
     
-    // Time filtering
-    if (timeRange !== 'all') {
-      const now = new Date();
-      let start: Date, end: Date;
-
-      switch (timeRange) {
-        case 'this_month':
-          start = startOfMonth(now);
-          end = endOfMonth(now);
-          break;
-        case 'last_month':
-          start = startOfMonth(subMonths(now, 1));
-          end = endOfMonth(subMonths(now, 1));
-          break;
-        case 'last_3_months':
-          start = subMonths(now, 3);
-          end = now;
-          break;
-        case 'last_year':
-          start = subMonths(now, 12);
-          end = now;
-          break;
-        default:
-          break;
-      }
-
-      result = result.filter(row => {
-        const dateKey = Object.keys(row).find(k => row[k] instanceof Date);
-        if (!dateKey) return true;
-        // @ts-ignore
-        return isWithinInterval(row[dateKey], { start, end });
+    try {
+      const headers = Object.keys(newJson[0] || {});
+      const mappings = await getSemanticSchemaMapping(headers);
+      
+      const mappedData = newJson.map(row => {
+        const newRow: any = { ...row, _source: fileName }; // Preserve original fields
+        mappings.forEach(m => {
+          if (row[m.originalHeader] !== undefined) {
+            newRow[m.mappedHeader] = row[m.originalHeader];
+          }
+        });
+        
+        // Fallback logic for common fields if mapping missed them
+        if (!newRow.lead_name) newRow.lead_name = row['Name'] || row['Full Name'] || row['lead_name'] || 'Unknown';
+        if (!newRow.phone_number) newRow.phone_number = row['Phone'] || row['Contact'] || row['phone_number'] || '';
+        if (!newRow.email) newRow.email = row['Email'] || row['email'] || '';
+        
+        newRow.phone_number = formatPhoneNumber(String(newRow.phone_number));
+        newRow.grade = standardizeGrade(String(newRow.grade || row['Grade'] || row['Class'] || ''));
+        newRow.status = fileName.toLowerCase().includes('old') ? 'Inactive' : 'Active';
+        
+        return newRow;
       });
-    }
 
-    // Chart filtering
-    if (chartFilter) {
-      result = result.filter(row => row[chartFilter.column] === chartFilter.value);
-    }
+      setData(prev => {
+        const combined = [...prev, ...mappedData];
+        const unique = new Map();
+        let duplicates = 0;
+        
+        combined.forEach(row => {
+          const key = (row.email || row.phone_number || row.lead_name).toLowerCase();
+          if (unique.has(key)) {
+            duplicates++;
+            const existing = unique.get(key);
+            unique.set(key, { ...existing, ...row });
+          } else {
+            unique.set(key, row);
+          }
+        });
 
-    return result;
-  }, [data, timeRange, chartFilter]);
+        const finalData = Array.from(unique.values());
+        
+        // Dynamically update column configs to include any new keys found
+        setColumnConfigs(prevCols => {
+          const existingIds = new Set(prevCols.map(c => c.id));
+          const allKeys = new Set<string>();
+          finalData.forEach(row => Object.keys(row).forEach(k => allKeys.add(k)));
+          
+          const newCols = Array.from(allKeys)
+            .filter(key => !existingIds.has(key))
+            .map(key => ({
+              id: key,
+              header: key.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
+              visible: true,
+              type: (key.toLowerCase().includes('phone') ? 'text' : 
+                    key.toLowerCase().includes('date') ? 'date' : 
+                    key.toLowerCase().includes('amount') || key.toLowerCase().includes('price') ? 'number' : 'text') as ColumnConfig['type']
+            }));
+            
+          return [...prevCols, ...newCols];
+        });
 
-  const handleAnalyze = async () => {
-    if (filteredData.length === 0) return;
-    setIsAnalyzing(true);
-    try {
-      const report = await analyzeData(filteredData);
-      setAiReport(report);
-      setActiveTab('ai');
+        setStats(s => ({
+          totalRecords: finalData.length,
+          duplicatesRemoved: s.duplicatesRemoved + duplicates,
+          formattingFixed: s.formattingFixed + mappedData.length,
+          schemaMapped: s.schemaMapped + mappings.length
+        }));
+
+        return finalData;
+      });
+
+      logAction('Data Merged', `Successfully merged ${fileName} into Golden Record`);
+
     } catch (error) {
-      console.error("Analysis failed:", error);
+      console.error("Processing error:", error);
+      logAction('Error', `Failed to process ${fileName}`);
     } finally {
-      setIsAnalyzing(false);
+      setIsProcessing(false);
     }
   };
 
-  const handleGetSuggestions = async () => {
+  const handleNormalize = async () => {
     if (data.length === 0) return;
-    setIsCleaning(true);
+    setIsNormalizing(true);
+    logAction('AI Orchestration', 'Started Multi-Pass Inference Pipeline (Fixer, Linker, Doctor, Survivor)');
     try {
-      const suggestions = await suggestCleaning(data);
-      setCleaningSuggestions(suggestions.cleaningSteps || []);
+      const result = await runOrchestrationPipeline(data);
+      if (result.data && result.data.length > 0) {
+        setData(result.data);
+        setRecoveryMetrics(result.metadataMap);
+        setSchemaInsights(result.schemaInsights);
+        
+        result.cleaningSteps.forEach(step => {
+          logAction(`Gate: ${step.gate}`, `${step.description} (${step.count} records)`);
+        });
+        
+        // Re-initialize column configs to reflect the new Golden Record schema + AI fields
+        const schemaCols: ColumnConfig[] = [
+          { id: 'family_id', header: 'Family ID', visible: true, type: 'text' },
+          { id: 'student_id', header: 'Student ID', visible: true, type: 'text' },
+          { id: 'lead_name', header: 'Lead Name', visible: true, type: 'text' },
+          { id: 'phone_number', header: 'Phone', visible: true, type: 'text' },
+          { id: 'email', header: 'Email', visible: true, type: 'text' },
+          { id: 'normalized_grade', header: 'Current Grade', visible: true, type: 'text' },
+          { id: 'predicted_grade', header: '2026 Prediction', visible: true, type: 'text' },
+          { id: 'grade_source', header: 'Grade Source', visible: true, type: 'text' },
+          { id: 'school_name', header: 'School', visible: true, type: 'text' },
+          { id: 'dob', header: 'DOB', visible: true, type: 'text' },
+          { id: 'status', header: 'Status', visible: true, type: 'text' },
+          { id: 'validation_flag', header: 'Flags', visible: true, type: 'text' }
+        ];
+        setColumnConfigs(schemaCols);
+        
+        logAction('AI Orchestration Complete', `Unified ${result.data.length} records into the Golden Record schema.`);
+      }
     } catch (error) {
-      console.error("Cleaning suggestions failed:", error);
+      console.error("Orchestration failed:", error);
+      logAction('Error', 'AI Orchestration pipeline failed');
     } finally {
-      setIsCleaning(false);
+      setIsNormalizing(false);
     }
   };
 
-  const applyCleaning = (step: any) => {
-    const newData = data.map(row => {
-      const newRow = { ...row };
-      if (newRow[step.column] === null || newRow[step.column] === undefined || newRow[step.column] === '') {
-        newRow[step.column] = step.replacementValue;
-      }
-      return newRow;
-    });
-    setData(newData);
-    setCleaningSuggestions(prev => prev.filter(s => s !== step));
+  const handleExport = () => {
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Golden Record");
+    XLSX.writeFile(wb, "Golden_Record_Leads.xlsx");
+    logAction('Export', 'Exported data to CSV');
   };
 
-  const resetData = () => {
-    setData(originalData);
-    setCleaningSuggestions([]);
+  const runAiAnalysis = async () => {
+    if (data.length === 0) return;
+    setIsProcessing(true);
+    const analysis = await analyzeDataSwamp(data);
+    setAiAnalysis(analysis);
+    setIsProcessing(false);
+    setActiveTab('ai');
+    logAction('AI Audit', 'Generated forensic audit report');
   };
 
-  const clearData = () => {
-    setData([]);
-    setOriginalData([]);
-    setFileName('');
-    setAiReport(null);
-    setCleaningSuggestions([]);
-  };
+  const currentConfig = useMemo(() => ({
+    role,
+    activeTab,
+    columnConfigs
+  }), [role, activeTab, columnConfigs]);
 
-  const currentConfig = { role, timeRange, activeTab };
   const loadConfig = (config: any) => {
     if (config.role) setRole(config.role);
-    if (config.timeRange) setTimeRange(config.timeRange);
     if (config.activeTab) setActiveTab(config.activeTab);
+    if (config.columnConfigs) setColumnConfigs(config.columnConfigs);
+    logAction('Template Loaded', 'Applied saved configuration template');
   };
 
-  if (data.length === 0) {
-    return (
-      <div className="min-h-screen bg-[#F9FAFB] flex flex-col items-center justify-center p-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-12 space-y-4"
-        >
-          <div className="inline-flex p-3 bg-emerald-100 text-emerald-600 rounded-2xl mb-4">
-            <Database className="w-8 h-8" />
-          </div>
-          <h1 className="text-4xl font-bold text-zinc-900 tracking-tight">DataLens AI</h1>
-          <p className="text-zinc-500 max-w-md mx-auto">
-            Professional data analysis & reporting system. Upload your Excel or CSV data to begin.
-          </p>
-        </motion.div>
-        <FileUpload onDataLoaded={handleDataLoaded} isLoading={false} />
-      </div>
-    );
-  }
+  const applyChatActions = useCallback((actions: ChatAction[]) => {
+    setData(prevData => {
+      let newData = [...prevData];
+      let newCols = [...columnConfigs];
+
+      actions.forEach(action => {
+        switch (action.type) {
+          case 'update_cell':
+            const { rowId, columnId, value } = action.payload;
+            if (newData[rowId]) {
+              newData[rowId] = { ...newData[rowId], [columnId]: value };
+            }
+            break;
+          case 'rename_column':
+            const { oldId, newHeader } = action.payload;
+            newCols = newCols.map(c => c.id === oldId ? { ...c, header: newHeader } : c);
+            break;
+          case 'delete_column':
+            newCols = newCols.filter(c => c.id !== action.payload.columnId);
+            break;
+          case 'add_column':
+            const { header, logic } = action.payload;
+            const newId = header.toLowerCase().replace(/\s+/g, '_');
+            newCols.push({ id: newId, header, visible: true, type: 'text' });
+            // Logic would ideally be applied here, but for now we just add the column
+            break;
+          case 'transform_data':
+            // Simple transformation logic could be implemented here
+            break;
+        }
+      });
+
+      setColumnConfigs(newCols);
+      return newData;
+    });
+    logAction('AI Chat Action', `Applied ${actions.length} automated data modifications`);
+  }, [columnConfigs]);
 
   return (
-    <div className="min-h-screen bg-[#F9FAFB] flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-zinc-100 flex flex-col fixed h-full z-10">
-        <div className="p-6 border-b border-zinc-100">
-          <div className="flex items-center gap-3 text-emerald-600">
-            <Database className="w-6 h-6" />
-            <span className="font-bold text-zinc-900 text-lg">DataLens AI</span>
+    <div className="min-h-screen bg-[#F8F9FA] text-zinc-900 font-sans selection:bg-emerald-100 selection:text-emerald-900 flex">
+      <AIChat data={data} columns={columnConfigs} onApplyActions={applyChatActions} />
+      {/* Sidebar Navigation */}
+      <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-zinc-100 p-6 z-50 hidden lg:flex flex-col">
+        <div className="flex items-center gap-3 mb-10">
+          <div className="h-10 w-10 bg-emerald-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-600/20">
+            <Database className="h-6 w-6" />
           </div>
+          <span className="text-xl font-black tracking-tight">DataLens AI</span>
         </div>
 
-        <div className="p-4 border-b border-zinc-100 space-y-4">
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-2">Your Role</label>
-            <div className="relative">
-              <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-              <select 
-                value={role}
-                onChange={(e) => setRole(e.target.value as Role)}
-                className="w-full pl-9 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 appearance-none"
-              >
-                <option>General</option>
-                <option>Accountant</option>
-                <option>Manager</option>
-                <option>Analyst</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-2">Time Range</label>
-            <div className="relative">
-              <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400" />
-              <select 
-                value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value as TimeRange)}
-                className="w-full pl-9 pr-4 py-2 bg-zinc-50 border border-zinc-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 appearance-none"
-              >
-                <option value="all">All Time</option>
-                <option value="this_month">This Month</option>
-                <option value="last_month">Last Month</option>
-                <option value="last_3_months">Last 3 Months</option>
-                <option value="last_year">Last Year</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <nav className="flex-1 p-4 space-y-1">
-          <SidebarLink 
+        <nav className="space-y-1 flex-1">
+          <NavItem 
+            icon={<LayoutDashboard className="h-4 w-4" />} 
+            label="Dashboard" 
             active={activeTab === 'dashboard'} 
             onClick={() => setActiveTab('dashboard')}
-            icon={<LayoutDashboard className="w-4 h-4" />}
-            label="Dashboard"
           />
-          <SidebarLink 
-            active={activeTab === 'data'} 
-            onClick={() => setActiveTab('data')}
-            icon={<TableIcon className="w-4 h-4" />}
-            label="Data Explorer"
+          <NavItem 
+            icon={<TableIcon className="h-4 w-4" />} 
+            label="Golden Record" 
+            active={activeTab === 'table'} 
+            onClick={() => setActiveTab('table')}
           />
-          <SidebarLink 
-            active={activeTab === 'visuals'} 
-            onClick={() => setActiveTab('visuals')}
-            icon={<BarChart3 className="w-4 h-4" />}
-            label="Visualizations"
+          <NavItem 
+            icon={<PieChartIcon className="h-4 w-4" />} 
+            label="Visualizations" 
+            active={activeTab === 'charts'} 
+            onClick={() => setActiveTab('charts')}
           />
-          <SidebarLink 
+          <NavItem 
+            icon={<Brain className="h-4 w-4" />} 
+            label="AI Intelligence" 
             active={activeTab === 'ai'} 
             onClick={() => setActiveTab('ai')}
-            icon={<Brain className="w-4 h-4" />}
-            label="AI Insights"
           />
-          <SidebarLink 
-            active={activeTab === 'report'} 
-            onClick={() => setActiveTab('report')}
-            icon={<FileText className="w-4 h-4" />}
-            label="Report Generator"
+          <NavItem 
+            icon={<FileDown className="h-4 w-4" />} 
+            label="Report Generator" 
+            active={activeTab === 'reports'} 
+            onClick={() => setActiveTab('reports')}
           />
-          <SidebarLink 
-            active={activeTab === 'settings'} 
-            onClick={() => setActiveTab('settings')}
-            icon={<Settings className="w-4 h-4" />}
-            label="Presets"
+          <NavItem 
+            icon={<History className="h-4 w-4" />} 
+            label="Audit Trail" 
+            active={activeTab === 'audit'} 
+            onClick={() => setActiveTab('audit')}
+          />
+          <NavItem 
+            icon={<FileText className="h-4 w-4" />} 
+            label="Templates" 
+            active={activeTab === 'templates'} 
+            onClick={() => setActiveTab('templates')}
           />
         </nav>
 
-        <div className="p-4 border-t border-zinc-100 space-y-2">
-          <button 
-            onClick={clearData}
-            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded-xl transition-colors"
-          >
-            <Trash2 className="w-4 h-4" />
-            Clear Session
-          </button>
+        <div className="mt-auto pt-6 border-t border-zinc-100">
+          <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
+            <div className="flex items-center gap-2 mb-2">
+              <RefreshCw className={cn("h-3 w-3 text-emerald-600", (isProcessing || isNormalizing) && "animate-spin")} />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">System Status</span>
+            </div>
+            <p className="text-xs font-medium text-zinc-600">
+              {isProcessing ? "Processing Swamp..." : isNormalizing ? "Normalizing..." : "Ready for Ingestion"}
+            </p>
+          </div>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 ml-64 p-8">
-        <header className="flex items-center justify-between mb-8">
+      {/* Main Content Area */}
+      <div className="flex-1 lg:pl-64 flex flex-col min-h-screen">
+        <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-zinc-100 px-8 py-4 flex items-center justify-between">
           <div>
-            <h2 className="text-2xl font-bold text-zinc-900">{fileName}</h2>
-            <p className="text-sm text-zinc-500">
-              {filteredData.length} of {data.length} rows visible
-              {timeRange !== 'all' && ` (${timeRange.replace('_', ' ')})`}
-            </p>
+            <h1 className="text-lg font-bold text-zinc-900">
+              {activeTab === 'dashboard' && "Data Swamp Ingestion"}
+              {activeTab === 'table' && "Golden Record Explorer"}
+              {activeTab === 'charts' && "Interactive Visualizations"}
+              {activeTab === 'ai' && "AI Intelligence Hub"}
+              {activeTab === 'reports' && "Professional Reports"}
+              {activeTab === 'audit' && "System Audit Trail"}
+              {activeTab === 'templates' && "Configuration Templates"}
+            </h1>
+            <p className="text-xs text-zinc-500">Transforming fragmented silos into a source of truth.</p>
           </div>
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={resetData}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-zinc-600 bg-white border border-zinc-200 rounded-xl hover:bg-zinc-50 transition-colors shadow-sm"
+
+          <div className="flex items-center gap-4">
+            {activeTab === 'table' && (
+              <div className="flex items-center gap-2 mr-4 pr-4 border-r border-zinc-100">
+                <button 
+                  onClick={handleNormalize}
+                  disabled={isNormalizing}
+                  className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 text-sm font-bold rounded-xl hover:bg-emerald-100 transition-all disabled:opacity-50"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  Normalize AI
+                </button>
+                <button 
+                  onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                  className={cn(
+                    "p-2 rounded-xl transition-all",
+                    isSidebarOpen ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                  )}
+                >
+                  <PanelLeft className="h-5 w-5" />
+                </button>
+              </div>
+            )}
+            
+            <select 
+              value={role}
+              onChange={(e) => setRole(e.target.value as Role)}
+              className="bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-1.5 text-xs font-bold text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
             >
-              <RefreshCw className="w-4 h-4" />
-              Reset
-            </button>
-            <button 
-              onClick={handleGetSuggestions}
-              disabled={isCleaning}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-emerald-600 bg-emerald-50 rounded-xl hover:bg-emerald-100 transition-colors shadow-sm disabled:opacity-50"
-            >
-              <Wand2 className="w-4 h-4" />
-              {isCleaning ? "Thinking..." : "Clean with AI"}
+              <option value="General">General User</option>
+              <option value="Accountant">Accountant</option>
+              <option value="Manager">Manager</option>
+              <option value="Analyst">Analyst</option>
+              <option value="Government">Government Official</option>
+            </select>
+
+            <button className="p-2 text-zinc-400 hover:text-zinc-900 transition-colors">
+              <Settings className="h-5 w-5" />
             </button>
           </div>
         </header>
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.2 }}
-          >
-            {activeTab === 'dashboard' && (
-              <div className="space-y-8">
-                {/* Stats Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                  <StatCard title="Total Rows" value={filteredData.length} />
-                  <StatCard title="Columns" value={Object.keys(data[0] || {}).length} />
-                  <StatCard title="Data Health" value="98%" />
-                  <StatCard title="Role Context" value={role} />
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  <div className="lg:col-span-2 space-y-8">
-                    <section>
-                      <h3 className="text-lg font-semibold text-zinc-900 mb-4">Quick Preview</h3>
-                      <DataTable data={filteredData.slice(0, 5)} />
-                    </section>
-                    <section>
-                      <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-semibold text-zinc-900">Visual Summary</h3>
-                        {chartFilter && (
-                          <button 
-                            onClick={() => setChartFilter(null)}
-                            className="text-xs text-emerald-600 hover:text-emerald-700 font-medium flex items-center gap-1"
-                          >
-                            <XCircle className="w-3 h-3" />
-                            Clear Chart Filter
-                          </button>
-                        )}
+        <div className="flex-1 flex overflow-hidden">
+          <main className="flex-1 p-8 overflow-y-auto">
+            <AnimatePresence mode="wait">
+              {activeTab === 'dashboard' && (
+                <motion.div
+                  key="dashboard"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="space-y-8"
+                >
+                  <FileUpload onFilesProcessed={processFiles} isProcessing={isProcessing} />
+                  
+                  {data.length > 0 && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Ingestion Metrics</h2>
+                        <button 
+                          onClick={() => {
+                            setData([]);
+                            setStats({ totalRecords: 0, duplicatesRemoved: 0, formattingFixed: 0, schemaMapped: 0 });
+                            logAction('Clear', 'Cleared all data from the swamp');
+                          }}
+                          className="text-xs font-bold text-red-500 hover:underline flex items-center gap-1"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Clear Swamp
+                        </button>
                       </div>
-                      <Visualizations 
-                        data={filteredData} 
-                        role={role} 
-                        onDataPointClick={(col, val) => {
-                          setChartFilter({ column: col, value: val });
-                          setActiveTab('data'); // Switch to data tab to see filtered results
-                        }} 
-                      />
-                    </section>
-                  </div>
+                      <DataHealth stats={stats} />
+                    </>
+                  )}
+                </motion.div>
+              )}
 
-                  <div className="space-y-8">
-                    <section className="h-full">
-                      <h3 className="text-lg font-semibold text-zinc-900 mb-4">AI Suggestions</h3>
-                      <div className="bg-white rounded-2xl border border-zinc-100 shadow-sm p-6 space-y-4">
-                        {cleaningSuggestions.length > 0 ? (
-                          cleaningSuggestions.map((step, i) => (
-                            <div key={i} className="p-4 bg-zinc-50 rounded-xl border border-zinc-100 space-y-3">
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-wider">{step.column}</p>
-                                  <p className="text-sm font-medium text-zinc-900">{step.issue}</p>
-                                </div>
-                                <div className="p-1 bg-amber-100 text-amber-600 rounded">
-                                  <Wand2 className="w-3 h-3" />
-                                </div>
-                              </div>
-                              <p className="text-xs text-zinc-500">{step.suggestion}</p>
-                              <button 
-                                onClick={() => applyCleaning(step)}
-                                className="w-full py-2 bg-white border border-zinc-200 rounded-lg text-xs font-semibold text-zinc-700 hover:bg-zinc-50 transition-colors flex items-center justify-center gap-2"
-                              >
-                                <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                                Apply Fix
-                              </button>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="text-center py-12 space-y-3">
-                            <div className="p-3 bg-zinc-50 rounded-full inline-flex text-zinc-300">
-                              <CheckCircle2 className="w-8 h-8" />
-                            </div>
-                            <p className="text-sm text-zinc-500">No cleaning suggestions yet. Click "Clean with AI" to scan your data.</p>
+              {activeTab === 'table' && (
+                <motion.div
+                  key="table"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="h-full"
+                >
+                  <DataTable 
+                    data={data} 
+                    columnConfigs={columnConfigs}
+                    onExport={handleExport} 
+                  />
+                </motion.div>
+              )}
+
+              {activeTab === 'charts' && (
+                <motion.div
+                  key="charts"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                >
+                  <Visualizations data={data} role={role} />
+                </motion.div>
+              )}
+
+              {activeTab === 'ai' && (
+                <motion.div
+                  key="ai"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                >
+                  <AIAssistant 
+                    report={aiAnalysis} 
+                    schemaInsights={schemaInsights}
+                    recoveryMetrics={recoveryMetrics}
+                    isLoading={isProcessing} 
+                    onAnalyze={runAiAnalysis} 
+                  />
+                </motion.div>
+              )}
+
+              {activeTab === 'reports' && (
+                <motion.div
+                  key="reports"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                >
+                  <ReportGenerator 
+                    data={data} 
+                    reportContent={aiAnalysis} 
+                    fileName="Golden_Record_Report" 
+                  />
+                </motion.div>
+              )}
+
+              {activeTab === 'audit' && (
+                <motion.div
+                  key="audit"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className="bg-white rounded-3xl shadow-sm border border-zinc-100 overflow-hidden"
+                >
+                  <div className="p-6 border-b border-zinc-100 bg-zinc-50/50">
+                    <h2 className="font-bold text-zinc-900">System Audit Trail</h2>
+                    <p className="text-xs text-zinc-500">Immutable record of all data operations and AI interventions.</p>
+                  </div>
+                  <div className="divide-y divide-zinc-100">
+                    {auditLogs.length === 0 ? (
+                      <div className="p-12 text-center text-zinc-400 italic">No logs recorded yet.</div>
+                    ) : (
+                      auditLogs.map((log, i) => (
+                        <div key={i} className="p-4 flex items-start gap-4 hover:bg-zinc-50 transition-colors">
+                          <div className="mt-1">
+                            {log.action.includes('Error') ? <XCircle className="w-4 h-4 text-red-500" /> : <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
                           </div>
-                        )}
-                      </div>
-                    </section>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-bold text-zinc-900">{log.action}</span>
+                              <span className="text-[10px] font-mono text-zinc-400">{log.timestamp.toLocaleTimeString()}</span>
+                            </div>
+                            <p className="text-xs text-zinc-600">{log.details}</p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className="text-[10px] px-2 py-0.5 bg-zinc-100 rounded text-zinc-500 font-medium">User: {log.user}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
-                </div>
-              </div>
-            )}
+                </motion.div>
+              )}
 
-            {activeTab === 'data' && (
-              <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-zinc-900">Full Dataset</h3>
-                  {chartFilter && (
-                    <div className="flex items-center gap-3">
-                      <div className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-medium border border-emerald-100 flex items-center gap-2">
-                        <BarChart3 className="w-3 h-3" />
-                        Filtered by {chartFilter.column}: {String(chartFilter.value)}
-                      </div>
-                      <button 
-                        onClick={() => setChartFilter(null)}
-                        className="text-xs text-zinc-400 hover:text-red-500 transition-colors"
-                      >
-                        <XCircle className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <DataTable data={filteredData} />
-              </section>
-            )}
+              {activeTab === 'templates' && (
+                <motion.div
+                  key="templates"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                >
+                  <TemplateManager currentConfig={currentConfig} onLoadConfig={loadConfig} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </main>
 
-            {activeTab === 'visuals' && (
-              <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-zinc-900">Interactive Charts</h3>
-                  {chartFilter && (
-                    <button 
-                      onClick={() => setChartFilter(null)}
-                      className="text-xs text-emerald-600 hover:text-emerald-700 font-medium flex items-center gap-1"
-                    >
-                      <XCircle className="w-3 h-3" />
-                      Clear Chart Filter
-                    </button>
-                  )}
-                </div>
-                <Visualizations 
-                  data={filteredData} 
-                  role={role} 
-                  onDataPointClick={(col, val) => {
-                    setChartFilter({ column: col, value: val });
-                    setActiveTab('data');
-                  }} 
+          {/* Right Sidebar for Column Selection */}
+          <AnimatePresence>
+            {isSidebarOpen && activeTab === 'table' && (
+              <motion.div
+                initial={{ x: 320 }}
+                animate={{ x: 0 }}
+                exit={{ x: 320 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="h-full border-l border-zinc-100"
+              >
+                <ColumnSelector 
+                  columns={columnConfigs} 
+                  onChange={setColumnConfigs} 
                 />
-              </section>
+              </motion.div>
             )}
-
-            {activeTab === 'ai' && (
-              <section className="space-y-4 h-[calc(100vh-200px)]">
-                <h3 className="text-lg font-semibold text-zinc-900">Predictive Analysis</h3>
-                <AIAssistant 
-                  report={aiReport} 
-                  isLoading={isAnalyzing} 
-                  onAnalyze={handleAnalyze} 
-                />
-              </section>
-            )}
-
-            {activeTab === 'report' && (
-              <section className="space-y-4">
-                <ReportGenerator 
-                  data={filteredData} 
-                  reportContent={aiReport} 
-                  fileName={fileName} 
-                />
-              </section>
-            )}
-
-            {activeTab === 'settings' && (
-              <section className="max-w-2xl mx-auto">
-                <TemplateManager 
-                  currentConfig={currentConfig} 
-                  onLoadConfig={loadConfig} 
-                />
-              </section>
-            )}
-          </motion.div>
-        </AnimatePresence>
-      </main>
+          </AnimatePresence>
+        </div>
+      </div>
     </div>
   );
 }
 
-const SidebarLink: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactNode; label: string }> = ({ active, onClick, icon, label }) => (
-  <button
-    onClick={onClick}
-    className={cn(
-      "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all",
-      active 
-        ? "bg-emerald-50 text-emerald-700 shadow-sm" 
-        : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900"
-    )}
-  >
-    {icon}
-    {label}
-  </button>
-);
-
-const StatCard: React.FC<{ title: string; value: string | number }> = ({ title, value }) => (
-  <div className="bg-white p-6 rounded-2xl border border-zinc-100 shadow-sm">
-    <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-1">{title}</p>
-    <p className="text-3xl font-bold text-zinc-900">{value}</p>
-  </div>
-);
+function NavItem({ icon, label, active, onClick }: { icon: React.ReactNode, label: string, active: boolean, onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200",
+        active 
+          ? "bg-emerald-50 text-emerald-700 shadow-sm" 
+          : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-900"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}

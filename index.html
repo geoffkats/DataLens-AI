@@ -56,35 +56,34 @@
       // Patch for html2canvas to handle oklch colors by providing a fallback
       // This is a common issue with Tailwind v4 and html2canvas
       const originalGetComputedStyle = window.getComputedStyle;
-      window.getComputedStyle = function(el) {
-        const style = originalGetComputedStyle(el);
-        const newStyle = {};
-        for (let i = 0; i < style.length; i++) {
-          const prop = style[i];
-          let val = style.getPropertyValue(prop);
-          if (val && val.includes('oklch')) {
-            // Very basic fallback: if it's oklch, try to return a neutral color 
-            // html2canvas fails on the oklch() function string
-            // We'll replace it with a simple rgb equivalent or just white/black
-            if (prop.includes('background')) val = 'rgb(255, 255, 255)';
-            else if (prop.includes('color')) val = 'rgb(0, 0, 0)';
-            else val = 'rgb(200, 200, 200)';
-          }
-          newStyle[prop] = val;
-        }
-        // Return a proxy that mimics CSSStyleDeclaration
+      window.getComputedStyle = function(el, pseudoElt) {
+        const style = originalGetComputedStyle.call(window, el, pseudoElt);
+        
+        // Return a proxy that mimics CSSStyleDeclaration and handles oklch
         return new Proxy(style, {
           get(target, prop) {
-            if (prop === 'getPropertyValue') {
-              return (p) => {
-                const v = target.getPropertyValue(p);
-                if (v && v.includes('oklch')) return 'rgb(128, 128, 128)';
-                return v;
-              };
+            const value = Reflect.get(target, prop);
+            
+            // Handle methods (like getPropertyValue)
+            if (typeof value === 'function') {
+              if (prop === 'getPropertyValue') {
+                return function(p) {
+                  const v = target.getPropertyValue(p);
+                  if (v && typeof v === 'string' && v.includes('oklch')) {
+                    return 'rgb(128, 128, 128)';
+                  }
+                  return v;
+                };
+              }
+              return value.bind(target);
             }
-            const v = target[prop];
-            if (typeof v === 'string' && v.includes('oklch')) return 'rgb(128, 128, 128)';
-            return v;
+            
+            // Handle string properties
+            if (typeof value === 'string' && value.includes('oklch')) {
+              return 'rgb(128, 128, 128)';
+            }
+            
+            return value;
           }
         });
       };
