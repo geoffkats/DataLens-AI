@@ -1,10 +1,25 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { ColumnConfig, ChatAction, PipelineResult, RecoveryMetric, CleaningStep, SchemaMapping } from "../types";
+import { ColumnConfig, ChatAction, PipelineResult, RecoveryMetric, CleaningStep, SchemaMapping, ActionPacket, SheetMetadata } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    if (!apiKey) {
+      console.warn("Gemini API Key missing. Ensure GEMINI_API_KEY (platform) or VITE_GEMINI_API_KEY (Vercel) is set.");
+      // We don't throw here to avoid white screen, but SDK will fail on call.
+      return null;
+    }
+    aiInstance = new GoogleGenAI({ apiKey });
+  }
+  return aiInstance;
+};
 
 // Gate 1: The Semantic Normalizer + Academic Drift (The "Fixer")
 const semanticNormalize = async (data: any[]): Promise<any[]> => {
+  const ai = getAI();
+  if (!ai) return data;
   const currentYear = 2026;
   const uniqueGrades = Array.from(new Set(data.map(d => String(d.grade || d.Grade || d.Class || d.normalized_grade || '')).filter(Boolean)));
   
@@ -66,6 +81,8 @@ const resolveHouseholds = (data: any[]): any[] => {
 // Gate 3: Forensic Recovery Gate (The "Doctor")
 const forensicRecovery = async (data: any[]): Promise<{ data: any[], metrics: RecoveryMetric[] }> => {
   if (data.length === 0) return { data: [], metrics: [] };
+  const ai = getAI();
+  if (!ai) return { data, metrics: [] };
   
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
@@ -126,6 +143,8 @@ const deduplicateSurvivor = (data: any[]): any[] => {
 };
 
 export const analyzeDraftSchema = async (headers: string[]): Promise<string> => {
+  const ai = getAI();
+  if (!ai) return "AI Service not initialized.";
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: `Analyze these 80+ unique headers from 16 disparate files: ${headers.join(', ')}.
@@ -178,6 +197,8 @@ export const runOrchestrationPipeline = async (data: any[]): Promise<PipelineRes
 };
 
 export const getSemanticSchemaMapping = async (headers: string[]): Promise<SchemaMapping[]> => {
+  const ai = getAI();
+  if (!ai) return [];
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: `Map these disparate CSV headers to a unified schema: [lead_name, phone_number, email, grade, source_campaign, status].
@@ -206,6 +227,8 @@ export const getSemanticSchemaMapping = async (headers: string[]): Promise<Schem
 };
 
 export const analyzeDataSwamp = async (data: any[]): Promise<string> => {
+  const ai = getAI();
+  if (!ai) return "AI Service not initialized.";
   const sample = data.slice(0, 20);
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
@@ -239,6 +262,8 @@ export const applyCleaningStep = async (data: any[], step: any): Promise<any[]> 
 };
 
 export const suggestCleaning = async (data: any[]): Promise<any> => {
+  const ai = getAI();
+  if (!ai) return { cleaningSteps: [] };
   const sampleData = data.slice(0, 20);
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
@@ -276,28 +301,45 @@ export const suggestCleaning = async (data: any[]): Promise<any> => {
 export const processChatCommand = async (
   command: string, 
   data: any[], 
-  columns: ColumnConfig[]
+  columns: ColumnConfig[],
+  allSheetsMetadata?: SheetMetadata[]
 ): Promise<{ actions: ChatAction[], message: string }> => {
-  const sampleData = data.slice(0, 10);
+  const ai = getAI();
+  if (!ai) return { actions: [], message: "AI Service is not initialized. Please check your API Key." };
+
+  const sampleData = data.slice(0, 5);
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
-    contents: `Act as a Data Architect and Automation Specialist. 
-    The user wants to manipulate their data via this command: "${command}"
+    contents: `Act as the DataLens Lead Architect and Automation Specialist. 
+    You are the "Data Analyst in a Box" for a complex 16-sheet ecosystem.
     
-    Current Columns: ${JSON.stringify(columns.map(c => ({ id: c.id, header: c.header })))}
-    Data Sample: ${JSON.stringify(sampleData)}
+    USER COMMAND: "${command}"
     
-    You can issue the following actions:
-    1. { "type": "update_cell", "payload": { "rowId": number, "columnId": string, "value": any } }
-    2. { "type": "rename_column", "payload": { "oldId": string, "newHeader": string } }
-    3. { "type": "delete_column", "payload": { "columnId": string } }
-    4. { "type": "transform_data", "payload": { "columnId": string, "logic": "description of logic" } }
-    5. { "type": "add_column", "payload": { "header": string, "logic": "description of logic" } }
+    CONTEXT:
+    - Current Columns: ${JSON.stringify(columns.map(c => ({ id: c.id, header: c.header })))}
+    - Data Sample (First 5 rows): ${JSON.stringify(sampleData)}
+    - Ecosystem Metadata (16 Sheets): ${JSON.stringify(allSheetsMetadata || [])}
+    
+    HEURISTICS & RULES:
+    1. PROACTIVE ERROR DETECTION: If the user asks for calculations, check if columns have '#REF!' or missing values. Suggest fixes first.
+    2. STRUCTURAL INTEGRITY: Warn if the user tries to delete primary keys like 'Family_ID' or 'Student_ID'.
+    3. FORMAT ENFORCEMENT: If adding/updating 'Phone', apply E.164 (+256) rules.
+    4. SUB-SHEET AWARENESS: Use the Ecosystem Metadata to suggest "Virtual Joins" if the command implies cross-workbook logic.
+    5. SANDBOX EXECUTION: For complex logic, generate an 'ActionPacket' with MAP/REDUCE/FILTER/COMPUTE operations.
+    
+    ACTION TYPES:
+    - update_cell: { rowId: number, columnId: string, value: any }
+    - rename_column: { oldId: string, newHeader: string }
+    - delete_column: { columnId: string }
+    - transform_data: { columnId: string, logic: string }
+    - add_column: { header: string, logic: string }
+    - bulk_update: { columnId: string, value: any, filter?: string }
+    - script_execution: { packet: ActionPacket }
     
     Return a JSON object:
     {
-      "actions": ChatAction[],
-      "message": "A helpful response explaining what you are doing"
+      "actions": Array<{ type: string, payload: any, packet?: ActionPacket, description: string }>,
+      "message": "A professional response explaining your forensic analysis and proposed changes."
     }`,
     config: { responseMimeType: "application/json" }
   });
@@ -306,6 +348,8 @@ export const processChatCommand = async (
 };
 
 export const generateChartTitle = async (xAxis: string, yAxis: string, role: string): Promise<string> => {
+  const ai = getAI();
+  if (!ai) return `${yAxis} by ${xAxis}`;
   const response = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: `Suggest a professional and descriptive title for a chart where the X-axis is "${xAxis}" and the Y-axis is "${yAxis}". The user's role is "${role}". Return only the title string, nothing else.`,

@@ -1,9 +1,8 @@
 import React from 'react';
-import { NormalizedLead } from '../services/geminiService';
 import { User, Phone, Mail, Tag, Info, ShieldCheck } from 'lucide-react';
 
 interface LeadTableProps {
-  leads: NormalizedLead[];
+  leads: any[];
 }
 
 export const LeadTable: React.FC<LeadTableProps> = ({ leads }) => {

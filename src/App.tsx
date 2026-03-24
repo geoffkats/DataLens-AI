@@ -47,10 +47,11 @@ import {
   processChatCommand
 } from './services/geminiService';
 import { formatPhoneNumber, standardizeGrade, cn } from './lib/utils';
-import { ColumnConfig, AuditLog, ChatAction, Tab, Role } from './types';
+import { ColumnConfig, AuditLog, ChatAction, Tab, Role, SheetMetadata, ActionPacket } from './types';
 
 export default function App() {
   const [data, setData] = useState<any[]>([]);
+  const [history, setHistory] = useState<any[][]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isNormalizing, setIsNormalizing] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -61,6 +62,7 @@ export default function App() {
   const [recoveryMetrics, setRecoveryMetrics] = useState<any[]>([]);
   const [columnConfigs, setColumnConfigs] = useState<ColumnConfig[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [allSheetsMetadata, setAllSheetsMetadata] = useState<SheetMetadata[]>([]);
   const [stats, setStats] = useState({
     totalRecords: 0,
     duplicatesRemoved: 0,
@@ -84,6 +86,17 @@ export default function App() {
     try {
       const headers = Object.keys(newJson[0] || {});
       const mappings = await getSemanticSchemaMapping(headers);
+      
+      // Update metadata for ecosystem awareness
+      setAllSheetsMetadata(prev => [
+        ...prev,
+        {
+          id: fileName.toLowerCase().replace(/\s+/g, '_'),
+          name: fileName,
+          columns: headers.map(h => ({ id: h, header: h, visible: true, type: 'text' })),
+          rowCount: newJson.length
+        }
+      ]);
       
       const mappedData = newJson.map(row => {
         const newRow: any = { ...row, _source: fileName }; // Preserve original fields
@@ -237,6 +250,8 @@ export default function App() {
   };
 
   const applyChatActions = useCallback((actions: ChatAction[]) => {
+    setHistory(prev => [...prev, [...data]]);
+    
     setData(prevData => {
       let newData = [...prevData];
       let newCols = [...columnConfigs];
@@ -257,13 +272,25 @@ export default function App() {
             newCols = newCols.filter(c => c.id !== action.payload.columnId);
             break;
           case 'add_column':
-            const { header, logic } = action.payload;
+            const { header } = action.payload;
             const newId = header.toLowerCase().replace(/\s+/g, '_');
-            newCols.push({ id: newId, header, visible: true, type: 'text' });
-            // Logic would ideally be applied here, but for now we just add the column
+            if (!newCols.find(c => c.id === newId)) {
+              newCols.push({ id: newId, header, visible: true, type: 'text' });
+            }
             break;
-          case 'transform_data':
-            // Simple transformation logic could be implemented here
+          case 'bulk_update':
+            const { columnId: bulkCol, value: bulkVal, filter } = action.payload;
+            newData = newData.map(row => {
+              if (!filter || eval(filter.replace(/row\./g, 'row.'))) { // Basic filter eval
+                return { ...row, [bulkCol]: bulkVal };
+              }
+              return row;
+            });
+            break;
+          case 'script_execution':
+            if (action.packet) {
+              newData = executeActionPacket(newData, action.packet);
+            }
             break;
         }
       });
@@ -272,11 +299,66 @@ export default function App() {
       return newData;
     });
     logAction('AI Chat Action', `Applied ${actions.length} automated data modifications`);
-  }, [columnConfigs]);
+  }, [data, columnConfigs]);
+
+  const executeActionPacket = (currentData: any[], packet: ActionPacket): any[] => {
+    const { op, columnId, targetColumnId, logic, params } = packet;
+    
+    switch (op) {
+      case 'MAP':
+      case 'COMPUTE':
+        return currentData.map(row => {
+          try {
+            // Safe evaluation of logic
+            const fn = new Function('row', 'params', `return ${logic}`);
+            return { ...row, [targetColumnId || columnId!]: fn(row, params) };
+          } catch (e) {
+            return row;
+          }
+        });
+      case 'FILTER':
+        return currentData.filter(row => {
+          try {
+            const fn = new Function('row', 'params', `return ${logic}`);
+            return fn(row, params);
+          } catch (e) {
+            return true;
+          }
+        });
+      case 'REDUCE':
+        try {
+          const initialValue = params?.initialValue || 0;
+          const fn = new Function('acc', 'row', 'params', `return ${logic}`);
+          const reducedValue = currentData.reduce((acc, row) => fn(acc, row, params), initialValue);
+          // Apply reduced value as a new column to all rows (window function style)
+          return currentData.map(row => ({ ...row, [targetColumnId || 'reduced_value']: reducedValue }));
+        } catch (e) {
+          return currentData;
+        }
+      default:
+        return currentData;
+    }
+  };
+
+  const handleUndo = () => {
+    if (history.length > 0) {
+      const lastState = history[history.length - 1];
+      setData(lastState);
+      setHistory(prev => prev.slice(0, -1));
+      logAction('Undo', 'Reverted last AI modification');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-zinc-900 font-sans selection:bg-emerald-100 selection:text-emerald-900 flex">
-      <AIChat data={data} columns={columnConfigs} onApplyActions={applyChatActions} />
+      <AIChat 
+        data={data} 
+        columns={columnConfigs} 
+        allSheetsMetadata={allSheetsMetadata}
+        onApplyActions={applyChatActions} 
+        onUndo={handleUndo}
+        canUndo={history.length > 0}
+      />
       {/* Sidebar Navigation */}
       <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-zinc-100 p-6 z-50 hidden lg:flex flex-col">
         <div className="flex items-center gap-3 mb-10">

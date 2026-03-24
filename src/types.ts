@@ -43,7 +43,24 @@ export interface PipelineResult {
   schemaInsights: string;
 }
 
+export interface ActionPacket {
+  op: 'MAP' | 'REDUCE' | 'FILTER' | 'COMPUTE';
+  columnId?: string;
+  targetColumnId?: string;
+  logic: string; // JavaScript expression or description
+  params?: any;
+}
+
 export interface ChatAction {
-  type: 'update_cell' | 'rename_column' | 'delete_column' | 'transform_data' | 'add_column';
+  type: 'update_cell' | 'rename_column' | 'delete_column' | 'transform_data' | 'add_column' | 'bulk_update' | 'script_execution';
   payload: any;
+  packet?: ActionPacket;
+  description: string;
+}
+
+export interface SheetMetadata {
+  id: string;
+  name: string;
+  columns: ColumnConfig[];
+  rowCount: number;
 }
