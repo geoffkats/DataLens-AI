@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sparkles, Loader2, X, MessageSquare, ShieldCheck, Undo2, History } from 'lucide-react';
+import { Send, Bot, User, Sparkles, Loader2, X, MessageSquare, ShieldCheck, Undo2, History, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '../lib/utils';
 import { processChatCommand } from '../services/geminiService';
@@ -19,9 +19,20 @@ interface AIChatProps {
   onApplyActions: (actions: ChatAction[]) => void;
   onUndo: () => void;
   canUndo: boolean;
+  hasGeminiKey: boolean;
+  onConnectKey: () => void;
 }
 
-export const AIChat: React.FC<AIChatProps> = ({ data, columns, allSheetsMetadata, onApplyActions, onUndo, canUndo }) => {
+export const AIChat: React.FC<AIChatProps> = ({ 
+  data, 
+  columns, 
+  allSheetsMetadata, 
+  onApplyActions, 
+  onUndo, 
+  canUndo,
+  hasGeminiKey,
+  onConnectKey
+}) => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -160,6 +171,24 @@ export const AIChat: React.FC<AIChatProps> = ({ data, columns, allSheetsMetadata
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-zinc-50/50">
+              {!hasGeminiKey && (
+                <div className="bg-zinc-900 text-white rounded-2xl p-4 space-y-3 shadow-xl border border-zinc-800">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                    <Key className="w-4 h-4" />
+                    AI Activation Required
+                  </div>
+                  <p className="text-xs text-zinc-300 leading-relaxed">
+                    To use advanced data engineering features, please connect your Gemini API Key. This enables "God Mode" and sub-sheet awareness.
+                  </p>
+                  <button 
+                    onClick={onConnectKey}
+                    className="w-full py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Key className="w-3 h-3" />
+                    Connect Gemini Key
+                  </button>
+                </div>
+              )}
               {messages.map((msg) => (
                 <div
                   key={msg.id}

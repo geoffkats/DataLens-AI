@@ -24,7 +24,8 @@ import {
   PanelLeft,
   Sparkles,
   PieChart as PieChartIcon,
-  FileDown
+  FileDown,
+  Key
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
@@ -63,12 +64,30 @@ export default function App() {
   const [columnConfigs, setColumnConfigs] = useState<ColumnConfig[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [allSheetsMetadata, setAllSheetsMetadata] = useState<SheetMetadata[]>([]);
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
   const [stats, setStats] = useState({
     totalRecords: 0,
     duplicatesRemoved: 0,
     formattingFixed: 0,
     schemaMapped: 0
   });
+
+  useEffect(() => {
+    const checkKey = async () => {
+      if ((window as any).aistudio?.hasSelectedApiKey) {
+        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+        setHasGeminiKey(hasKey);
+      }
+    };
+    checkKey();
+  }, []);
+
+  const handleConnectKey = async () => {
+    if ((window as any).aistudio?.openSelectKey) {
+      await (window as any).aistudio.openSelectKey();
+      setHasGeminiKey(true);
+    }
+  };
 
   const logAction = (action: string, details: string) => {
     setAuditLogs(prev => [{
@@ -358,6 +377,8 @@ export default function App() {
         onApplyActions={applyChatActions} 
         onUndo={handleUndo}
         canUndo={history.length > 0}
+        hasGeminiKey={hasGeminiKey}
+        onConnectKey={handleConnectKey}
       />
       {/* Sidebar Navigation */}
       <aside className="fixed left-0 top-0 h-full w-64 bg-white border-r border-zinc-100 p-6 z-50 hidden lg:flex flex-col">
@@ -423,6 +444,19 @@ export default function App() {
               {isProcessing ? "Processing Swamp..." : isNormalizing ? "Normalizing..." : "Ready for Ingestion"}
             </p>
           </div>
+          
+          <button
+            onClick={handleConnectKey}
+            className={cn(
+              "w-full mt-3 py-2 px-4 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2",
+              hasGeminiKey 
+                ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                : "bg-zinc-900 text-white hover:bg-zinc-800 shadow-lg shadow-zinc-900/20"
+            )}
+          >
+            <Key className="h-3 w-3" />
+            {hasGeminiKey ? "Gemini Connected" : "Connect Gemini Key"}
+          </button>
         </div>
       </aside>
 

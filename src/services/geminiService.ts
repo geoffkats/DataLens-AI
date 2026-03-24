@@ -5,7 +5,13 @@ let aiInstance: GoogleGenAI | null = null;
 
 const getAI = () => {
   if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    let apiKey = '';
+    try {
+      apiKey = (process as any).env?.API_KEY || (process as any).env?.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    } catch (e) {
+      apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
+    }
+
     if (!apiKey) {
       console.warn("Gemini API Key missing. Ensure GEMINI_API_KEY (platform) or VITE_GEMINI_API_KEY (Vercel) is set.");
       // We don't throw here to avoid white screen, but SDK will fail on call.
